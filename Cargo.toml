@@ -1,0 +1,18 @@
+[package]
+name = "cw"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+aws-config = { version = "1.5.10", features = ["behavior-version-latest"] }
+aws-sdk-cloudwatch = "1.55.0"
+aws-sdk-cloudwatchlogs = "1.58.0"
+chrono = "0.4.38"
+chronoutil = "0.2.7"
+clap = { version = "4.5.21", features = ["cargo", "derive"] }
+eyre = "0.6.12"
+humantime = "2.1.0"
+serde_json = "1.0.128"
+sqlx = { version = "0.8.2", features = ["sqlite", "runtime-tokio", "chrono"] }
+tokio = { version = "1", features = ["full"] }
+uuid = { version = "1.11.0", features = ["v4"] }
