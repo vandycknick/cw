@@ -1,37 +1,20 @@
-mod args;
+mod aws;
+mod commands;
 mod config;
-mod cw;
 mod db;
 mod editor;
+mod logging;
+mod proxy;
+mod utils;
 
+use crate::commands::Cw;
+use clap::Parser;
 use std::process::ExitCode;
 
-use clap::Parser;
-
-use crate::args::GlobalArgs;
-use crate::cw::Cw;
-
-async fn run() -> eyre::Result<()> {
-    let args = GlobalArgs::parse();
-    let cw = Cw::new(args).await;
-    cw.run().await?;
-    Ok(())
-}
-
 fn main() -> ExitCode {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build();
+    let cw = Cw::parse();
 
-    if let Err(err) = runtime {
-        eprint!("\x1b[31m");
-        eprint!("{}", err);
-        eprintln!("\x1b[0m");
-
-        return ExitCode::from(2);
-    }
-
-    match runtime.unwrap().block_on(run()) {
+    match cw.run() {
         Err(err) => {
             let root = err.root_cause();
 

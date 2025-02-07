@@ -13,7 +13,7 @@ use sqlx::{
 };
 use uuid::Uuid;
 
-#[derive(Default, Clone, Debug)]
+#[derive(Default, Debug, Clone, PartialEq, sqlx::FromRow)]
 pub struct QueryHistory {
     id: String,
     pub query_id: String,
@@ -32,21 +32,17 @@ pub struct QueryHistory {
 
 impl QueryHistory {
     pub fn new(query_id: String, contents: String) -> Self {
-        let uuid = Uuid::new_v4().as_simple().to_string();
+        let id = Uuid::new_v4().as_simple().to_string();
         let now = Utc::now();
 
         Self {
-            id: uuid.to_string(),
+            id,
             query_id,
             contents,
             created_at: now,
             modified_at: now,
             ..Default::default()
         }
-    }
-
-    pub fn id(&self) -> String {
-        self.id.clone()
     }
 
     pub fn set_status(&mut self, status: QueryStatus) {
@@ -69,7 +65,7 @@ impl QueryHistory {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, sqlx::Type)]
 pub enum QueryStatus {
     Scheduled,
     Running,
@@ -99,8 +95,13 @@ impl Display for QueryStatus {
 pub trait Database: Sized + Clone + Send + Sync + 'static {
     type Settings: Debug + Clone + Send + Sync + 'static;
     async fn new(settings: &Self::Settings) -> eyre::Result<Self>;
+
+    async fn version(&self) -> eyre::Result<String>;
+    fn engine(&self) -> &str;
+
     async fn save(&self, history: &QueryHistory) -> eyre::Result<()>;
     async fn update(&self, history: &QueryHistory) -> eyre::Result<()>;
+    async fn list(&self) -> eyre::Result<Vec<QueryHistory>>;
 }
 
 #[derive(Debug, Clone)]
@@ -129,7 +130,6 @@ impl Database for Sqlite {
 
     async fn new(path: &Self::Settings) -> eyre::Result<Self> {
         let path = Path::new(path);
-        // dbg!("opening sqlite database at {:?}", path);
 
         let create = !path.exists();
         if create {
@@ -154,8 +154,15 @@ impl Database for Sqlite {
         Ok(Self { pool })
     }
 
+    async fn version(&self) -> eyre::Result<String> {
+        self.sqlite_version().await
+    }
+
+    fn engine(&self) -> &str {
+        "sqlite"
+    }
+
     async fn save(&self, history: &QueryHistory) -> eyre::Result<()> {
-        // dbg!("saving history to sqlite");
         let mut tx = self.pool.begin().await?;
         sqlx::query(
             "insert or ignore into query_history(
@@ -165,7 +172,7 @@ impl Database for Sqlite {
             )
             values(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         )
-        .bind(history.id.as_str())
+        .bind(&history.id)
         .bind(history.query_id.as_str())
         .bind(history.contents.as_str())
         .bind(history.status.to_string().as_str())
@@ -201,7 +208,7 @@ impl Database for Sqlite {
                     deleted_at      = ?11
                 where id = ?1",
         )
-        .bind(history.id.as_str())
+        .bind(&history.id)
         .bind(history.query_id.as_str())
         .bind(history.contents.as_str())
         .bind(history.status.to_string().as_str())
@@ -218,5 +225,12 @@ impl Database for Sqlite {
         tx.commit().await?;
 
         Ok(())
+    }
+
+    async fn list(&self) -> eyre::Result<Vec<QueryHistory>> {
+        let items = sqlx::query_as::<_, QueryHistory>("select * from query_history")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(items)
     }
 }
