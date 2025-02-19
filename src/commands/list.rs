@@ -1,25 +1,36 @@
 use std::fmt::Display;
 
 use aws_sdk_cloudwatchlogs as cloudwatchlogs;
-use chrono::{DateTime, Utc};
-use chronoutil::RelativeDuration;
+use chrono::{DateTime, Days, Months, Utc};
 use clap::{command, Subcommand};
 use eyre::Context;
 
 use super::LogClientBuilder;
 
 #[derive(Subcommand, Debug)]
-#[command(infer_subcommands = true)]
+#[command(infer_subcommands = false)]
 pub enum Cmd {
     Groups,
-    Streams { group_name: String },
+    Streams {
+        group_name: String,
+
+        #[arg(
+            short,
+            long,
+            help = "Log streams that have exceeded the log group's retention period are considered expired and are filtered. Add this flag to show all streams."
+        )]
+        show_expired: bool,
+    },
 }
 
 impl Display for Cmd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Cmd::Groups => write!(f, "groups"),
-            Cmd::Streams { group_name } => write!(f, "streams <{}>", group_name),
+            Cmd::Streams {
+                group_name,
+                show_expired: _,
+            } => write!(f, "streams <{}>", group_name),
         }
     }
 }
@@ -29,7 +40,10 @@ impl Cmd {
         let client = builder.build().await?;
         match self {
             Self::Groups => self.list_groups(&client).await,
-            Self::Streams { group_name } => self.list_streams(&client, group_name).await,
+            Self::Streams {
+                group_name,
+                show_expired: _,
+            } => self.list_streams(&client, group_name).await,
         }
     }
 
@@ -73,6 +87,31 @@ impl Cmd {
         let mut next_token: Option<String> = None;
         let group_name = group_name.into();
 
+        let log_groups = client
+            .describe_log_groups()
+            .log_group_name_prefix(&group_name)
+            .send()
+            .await?;
+
+        let log_group = if let Some(g) = log_groups
+            .log_groups()
+            .iter()
+            .filter(|l| l.log_group_name() == Some(&group_name))
+            .next()
+        {
+            g
+        } else {
+            return Err(eyre::eyre!("Can't find log group with name {}", group_name));
+        };
+
+        let retention = if let Some(days) = log_group.retention_in_days() {
+            log::info!(target: "cw", "The retention for {} is set to {}.", group_name, days);
+            Utc::now().checked_sub_days(Days::new(days as u64))
+        } else {
+            log::info!(target: "cw", "No retention found for {}, only showing streams that received an event in the last 6 months.", group_name);
+            Utc::now().checked_sub_months(Months::new(6))
+        };
+
         loop {
             let mut request_builder = client
                 .describe_log_streams()
@@ -86,25 +125,15 @@ impl Cmd {
                 request_builder = request_builder.next_token(token);
             }
 
-            let six_months = RelativeDuration::months(6);
-            let sm_ago = Utc::now() - six_months;
-
             let response = request_builder
                 .send()
                 .await
                 .wrap_err("Failed creating AWS Client.")?;
 
-            let streams =
-                response
-                    .log_streams()
-                    .iter()
-                    .filter(|s| match s.last_event_timestamp() {
-                        Some(timestamp) => {
-                            // TODO: check if default is actually creating the correct behaviour here
-                            DateTime::from_timestamp_millis(timestamp).unwrap_or_default() > sm_ago
-                        }
-                        None => false,
-                    });
+            let streams = response.log_streams().iter().filter(|s| {
+                s.last_event_timestamp()
+                    .map_or(false, |t| DateTime::from_timestamp_millis(t) > retention)
+            });
 
             for stream in streams {
                 println!("{}", stream.log_stream_name().unwrap_or_default());

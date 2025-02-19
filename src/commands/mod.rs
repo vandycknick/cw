@@ -113,7 +113,7 @@ impl Cw {
         let config = LocalConfigManager::new();
         self.setup_logging(&config)?;
 
-        log::info!(target: "cw", "🐾 cw starting up.");
+        log::info!(target: "cw", "🐾 cw starting up!");
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
@@ -125,6 +125,7 @@ impl Cw {
 
         if let Err(msg) = &result {
             log::error!(target: "cw", "failed running command {}, error={} cause={}", &self.cmd, msg, msg.root_cause());
+            log::error!(target: "cw", "{:?}", msg);
         }
 
         result
