@@ -371,7 +371,6 @@ where
                                 Ok(ProxyStream::Secured(secure_stream))
                             }
 
-                            //Some(_) => panic!("hyper-proxy was not built with TLS support"),
                             None => Ok(ProxyStream::Regular(tunnel_stream)),
                         };
                     }
