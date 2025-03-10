@@ -10,7 +10,9 @@ use super::LogClientBuilder;
 #[derive(Subcommand, Debug)]
 #[command(infer_subcommands = false)]
 pub enum Cmd {
-    Groups,
+    Groups {
+        filter: Option<String>,
+    },
     Streams {
         group_name: String,
 
@@ -26,7 +28,7 @@ pub enum Cmd {
 impl Display for Cmd {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Cmd::Groups => write!(f, "groups"),
+            Cmd::Groups { filter: _ } => write!(f, "groups"),
             Cmd::Streams {
                 group_name,
                 show_expired: _,
@@ -39,7 +41,7 @@ impl Cmd {
     pub async fn run(&self, builder: &LogClientBuilder) -> eyre::Result<()> {
         let client = builder.build().await?;
         match self {
-            Self::Groups => self.list_groups(&client).await,
+            Self::Groups { filter } => self.list_groups(&client, filter).await,
             Self::Streams {
                 group_name,
                 show_expired: _,
@@ -47,12 +49,17 @@ impl Cmd {
         }
     }
 
-    pub async fn list_groups(&self, client: &cloudwatchlogs::Client) -> eyre::Result<()> {
+    pub async fn list_groups(
+        &self,
+        client: &cloudwatchlogs::Client,
+        filter: &Option<String>,
+    ) -> eyre::Result<()> {
         let mut next_token: Option<String> = None;
 
         loop {
             let mut request_builder = client
                 .describe_log_groups()
+                .set_log_group_name_pattern(filter.clone())
                 // NOTE: 50 is the maximum, ref: https://docs.aws.amazon.com/AmazonCloudWatchLogs/latest/APIReference/API_DescribeLogGroups.html#CWL-DescribeLogGroups-request-limit
                 .limit(50);
 
