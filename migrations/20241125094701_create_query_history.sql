@@ -2,6 +2,7 @@
 create table if not exists query_history (
     id text primary key,
     query_id text not null,
+    account text,
     status text not null,
     contents text not null,
 
