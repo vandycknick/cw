@@ -4,14 +4,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-aws-config = { version = "1.5.18", features = ["behavior-version-latest"] }
-aws-sdk-cloudwatch = "1.67"
-aws-sdk-cloudwatchlogs = "1.72"
-aws-sdk-sts = "1.62"
-aws-smithy-runtime = { version = "1.7.8",  features = ["connector-hyper-0-14-x", "client"] }
+aws-config = { version = "1.6.3", features = ["behavior-version-latest"] }
+aws-sdk-cloudwatch = "1.74"
+aws-sdk-cloudwatchlogs = "1.83"
+aws-sdk-sts = "1.69"
+aws-smithy-runtime = { version = "1.8.3",  features = ["connector-hyper-0-14-x", "client"] }
 bytes = "1.10.1"
-chrono = "0.4.40"
-clap = { version = "4.5.31", features = ["cargo", "derive"] }
+chrono = "0.4.41"
+clap = { version = "4.5.38", features = ["cargo", "derive"] }
 eyre = "0.6.12"
 futures-util = "0.3.31"
 headers = "0.4.0"
@@ -24,10 +24,10 @@ rustls = { version = "0.21",  features = ["default"] }
 rustls-native-certs = { version = "0.6" }
 rustls-pemfile = "2.2.0"
 serde_json = "1.0.139"
-sqlx = { version = "0.8.3", features = ["sqlite", "runtime-tokio", "chrono"] }
+sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio", "chrono"] }
 tokio = { version = "1", features = ["full"] }
 tokio-rustls = "0.24"
-uuid = { version = "1.12.1", features = ["v4"] }
+uuid = { version = "1.16.0", features = ["v4"] }
 
 [profile.release]
 strip = true
