@@ -114,7 +114,7 @@ impl Cmd {
             return Err(eyre::eyre!("File provided via -file does not exist!"));
         };
 
-        log::info!("Collecting events for query with id {}", query_id);
+        tracing::info!("Collecting events for query with id {}", query_id);
         let mut history = QueryHistory::new(query_id.to_string(), query);
         db.save(&history).await?;
 
@@ -145,8 +145,8 @@ impl Cmd {
                     );
                     db.update(&history).await?;
 
-                    log::info!("[{}] status: {}.", query_id, history.status);
-                    log::info!(
+                    tracing::info!("[{}] status: {}.", query_id, history.status);
+                    tracing::info!(
                         "[{}] showing: {} of {} records matched.",
                         query_id,
                         history.records_total,
@@ -154,7 +154,7 @@ impl Cmd {
                     );
 
                     let duration = history.modified_at - history.created_at;
-                    log::info!(
+                    tracing::info!(
                         "[{}] {} records ({} bytes) scanned in {},{}s.",
                         query_id,
                         history.records_scanned,
@@ -193,14 +193,14 @@ impl Cmd {
                     return Err(eyre::eyre!("Query timed out: {}", history.query_id));
                 }
                 None => {
-                    log::info!(
+                    tracing::info!(
                         "[{}] No status returned, unsure if I should proceed, exiting for now",
                         query_id
                     );
                     break;
                 }
                 _ => {
-                    log::error!("[{}] UNHANDLED status: {:?}", query_id, output.status);
+                    tracing::error!("[{}] UNHANDLED status: {:?}", query_id, output.status);
                     break;
                 }
             }

@@ -1,11 +1,15 @@
+mod rt;
 mod stream;
 mod tunnel;
 
 use http::header::{HeaderMap, HeaderName, HeaderValue};
-use hyper::{service::Service, Uri};
+use hyper::Uri;
+use rustls_pki_types::CertificateDer;
+use tower_service::Service;
+
+use hyper::rt::{Read, Write};
 
 use futures_util::future::TryFutureExt;
-use rustls::Certificate;
 use std::{fmt, io, sync::Arc};
 use std::{
     future::Future,
@@ -14,11 +18,12 @@ use std::{
 };
 
 pub use stream::ProxyStream;
-use tokio::io::{AsyncRead, AsyncWrite};
+
+use tokio_rustls::TlsConnector;
+
+use tokio_rustls::rustls::pki_types::ServerName;
 
 use headers::{authorization::Credentials, Authorization, HeaderMapExt, ProxyAuthorization};
-use tokio_rustls::rustls::ServerName;
-use tokio_rustls::TlsConnector;
 
 type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -34,8 +39,8 @@ pub enum Intercept {
     Https,
     /// No connection will go through this proxy
     None,
-    /// A custom intercept
-    Custom(Custom),
+    // A custom intercept
+    // Custom(Custom),
 }
 
 /// A trait for matching between Destination and Uri
@@ -68,22 +73,22 @@ pub(crate) fn io_err<E: Into<Box<dyn std::error::Error + Send + Sync>>>(e: E) ->
 }
 
 /// A Custom struct to proxy custom uris
-#[derive(Clone)]
-pub struct Custom(Arc<dyn Fn(Option<&str>, Option<&str>, Option<u16>) -> bool + Send + Sync>);
-
-impl fmt::Debug for Custom {
-    fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
-        write!(f, "_")
-    }
-}
-
-impl<F: Fn(Option<&str>, Option<&str>, Option<u16>) -> bool + Send + Sync + 'static> From<F>
-    for Custom
-{
-    fn from(f: F) -> Custom {
-        Custom(Arc::new(f))
-    }
-}
+// #[derive(Clone)]
+// pub struct Custom(Arc<dyn Fn(Option<&str>, Option<&str>, Option<u16>) -> bool + Send + Sync>);
+//
+// impl fmt::Debug for Custom {
+//     fn fmt(&self, f: &mut fmt::Formatter) -> Result<(), fmt::Error> {
+//         write!(f, "_")
+//     }
+// }
+//
+// impl<F: Fn(Option<&str>, Option<&str>, Option<u16>) -> bool + Send + Sync + 'static> From<F>
+//     for Custom
+// {
+//     fn from(f: F) -> Custom {
+//         Custom(Arc::new(f))
+//     }
+// }
 
 impl Intercept {
     /// A function to check if given `Uri` is proxied
@@ -92,19 +97,19 @@ impl Intercept {
             (&Intercept::All, _)
             | (&Intercept::Http, Some("http"))
             | (&Intercept::Https, Some("https")) => true,
-            (&Intercept::Custom(Custom(ref f)), _) => f(uri.scheme(), uri.host(), uri.port()),
+            // (&Intercept::Custom(Custom(ref f)), _) => f(uri.scheme(), uri.host(), uri.port()),
             _ => false,
         }
     }
 }
 
-impl<F: Fn(Option<&str>, Option<&str>, Option<u16>) -> bool + Send + Sync + 'static> From<F>
-    for Intercept
-{
-    fn from(f: F) -> Intercept {
-        Intercept::Custom(f.into())
-    }
-}
+// impl<F: Fn(Option<&str>, Option<&str>, Option<u16>) -> bool + Send + Sync + 'static> From<F>
+//     for Intercept
+// {
+//     fn from(f: F) -> Intercept {
+//         Intercept::Custom(f.into())
+//     }
+// }
 
 /// A Proxy struct
 #[derive(Clone, Debug)]
@@ -198,19 +203,17 @@ impl<C> ProxyConnector<C> {
     /// Create a new secured Proxies
     pub fn new(
         connector: C,
-        self_signed_certificate: Option<Certificate>,
-    ) -> Result<Self, io::Error> {
-        let builder = tokio_rustls::rustls::ClientConfig::builder().with_safe_defaults();
+        self_signed_certificate: Option<Vec<CertificateDer<'static>>>,
+    ) -> Self {
+        let builder = tokio_rustls::rustls::ClientConfig::builder();
 
         let mut roots = tokio_rustls::rustls::RootCertStore::empty();
-        for cert in rustls_native_certs::load_native_certs()? {
-            roots
-                .add(&tokio_rustls::rustls::Certificate(cert.0))
-                .map_err(io_err)?;
-        }
+        let k = rustls_native_certs::load_native_certs();
 
-        if let Some(cert) = self_signed_certificate {
-            roots.add(&cert).map_err(io_err)?;
+        roots.add_parsable_certificates(k.certs);
+
+        if let Some(certs) = self_signed_certificate {
+            roots.add_parsable_certificates(certs);
         }
 
         let config = builder.with_root_certificates(roots).with_no_client_auth();
@@ -218,11 +221,11 @@ impl<C> ProxyConnector<C> {
         let cfg = Arc::new(config);
         let tls = TlsConnector::from(cfg);
 
-        Ok(ProxyConnector {
+        ProxyConnector {
             proxies: Vec::new(),
             connector,
             tls: Some(tls),
-        })
+        }
     }
 
     /// Create a new unsecured Proxy
@@ -236,20 +239,14 @@ impl<C> ProxyConnector<C> {
     }
 
     /// Create a proxy connector and attach a particular proxy
-    pub fn from_proxy(connector: C, proxy: Proxy) -> Result<Self, io::Error> {
-        let mut c = ProxyConnector::new(connector, None)?;
-        c.proxies.push(proxy);
-        Ok(c)
-    }
-
-    pub fn from_proxy_with_self_signed_certificate(
+    pub fn from_proxy(
         connector: C,
         proxy: Proxy,
-        cert: Certificate,
-    ) -> Result<Self, io::Error> {
-        let mut c = ProxyConnector::new(connector, Some(cert))?;
+        certs: Option<Vec<CertificateDer<'static>>>,
+    ) -> Self {
+        let mut c = ProxyConnector::new(connector, certs);
         c.proxies.push(proxy);
-        Ok(c)
+        c
     }
 
     /// Create a proxy connector and attach a particular proxy
@@ -318,7 +315,7 @@ macro_rules! mtry {
 impl<C> Service<Uri> for ProxyConnector<C>
 where
     C: Service<Uri>,
-    C::Response: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    C::Response: Read + Write + Send + Unpin + 'static,
     C::Future: Send + 'static,
     C::Error: Into<BoxError>,
 {
@@ -336,41 +333,44 @@ where
 
     fn call(&mut self, uri: Uri) -> Self::Future {
         if let (Some(p), Some(host)) = (self.match_proxy(&uri), uri.host()) {
-            if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) || p.force_connect {
+            tracing::debug!(target: "cw", "proxying uri {:?}.", uri.to_string());
+            if uri.scheme() == Some(&http::uri::Scheme::HTTPS) || p.force_connect {
                 let host = host.to_owned();
-                let port = uri.port_u16().unwrap_or(
-                    if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTP) {
-                        80
-                    } else {
-                        443
-                    },
-                );
+                let port =
+                    uri.port_u16()
+                        .unwrap_or(if uri.scheme() == Some(&http::uri::Scheme::HTTP) {
+                            80
+                        } else {
+                            443
+                        });
+
                 let tunnel = tunnel::new(&host, port, &p.headers);
                 let connection =
                     proxy_dst(&uri, &p.uri).map(|proxy_url| self.connector.call(proxy_url));
-                let tls = if uri.scheme() == Some(&hyper::http::uri::Scheme::HTTPS) {
+                let tls = if uri.scheme() == Some(&http::uri::Scheme::HTTPS) {
                     self.tls.clone()
                 } else {
                     None
                 };
 
                 Box::pin(async move {
+                    // NOTE: can be removed if `try_blocks` ever materializes: https://github.com/rust-lang/rust/issues/31436
                     loop {
-                        // this hack will gone once `try_blocks` will eventually stabilized
                         let proxy_stream = mtry!(mtry!(connection).await.map_err(io_err));
                         let tunnel_stream = mtry!(tunnel.with_stream(proxy_stream).await);
 
                         break match tls {
                             Some(tls) => {
-                                let dnsref =
-                                    mtry!(ServerName::try_from(host.as_str()).map_err(io_err));
-                                let tls = TlsConnector::from(tls);
-                                let secure_stream =
-                                    mtry!(tls.connect(dnsref, tunnel_stream).await.map_err(io_err));
+                                use hyper_util::rt::TokioIo;
+                                let server_name =
+                                    mtry!(ServerName::try_from(host.to_string()).map_err(io_err));
+                                let secure_stream = mtry!(tls
+                                    .connect(server_name, TokioIo::new(tunnel_stream))
+                                    .await
+                                    .map_err(io_err));
 
-                                Ok(ProxyStream::Secured(secure_stream))
+                                Ok(ProxyStream::Secured(Box::new(TokioIo::new(secure_stream))))
                             }
-
                             None => Ok(ProxyStream::Regular(tunnel_stream)),
                         };
                     }

@@ -3,7 +3,7 @@ mod commands;
 mod config;
 mod db;
 mod editor;
-mod logging;
+mod http;
 mod proxy;
 mod utils;
 

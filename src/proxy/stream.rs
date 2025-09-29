@@ -1,19 +1,21 @@
+use hyper::rt::{Read, ReadBufCursor, Write};
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+
+use hyper_util::client::legacy::connect::{Connected, Connection};
+
+use hyper_util::rt::TokioIo;
 
 use tokio_rustls::client::TlsStream as RustlsStream;
 
-use hyper::client::connect::{Connected, Connection};
-
-pub type TlsStream<R> = RustlsStream<R>;
+pub type TlsStream<R> = TokioIo<RustlsStream<TokioIo<R>>>;
 
 /// A Proxy Stream wrapper
 pub enum ProxyStream<R> {
     NoProxy(R),
     Regular(R),
-    Secured(TlsStream<R>),
+    Secured(Box<TlsStream<R>>),
 }
 
 macro_rules! match_fn_pinned {
@@ -34,17 +36,17 @@ macro_rules! match_fn_pinned {
     };
 }
 
-impl<R: AsyncRead + AsyncWrite + Unpin> AsyncRead for ProxyStream<R> {
+impl<R: Read + Write + Unpin> Read for ProxyStream<R> {
     fn poll_read(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
-        buf: &mut ReadBuf<'_>,
+        buf: ReadBufCursor<'_>,
     ) -> Poll<io::Result<()>> {
         match_fn_pinned!(self, poll_read, cx, buf)
     }
 }
 
-impl<R: AsyncRead + AsyncWrite + Unpin> AsyncWrite for ProxyStream<R> {
+impl<R: Read + Write + Unpin> Write for ProxyStream<R> {
     fn poll_write(
         self: Pin<&mut Self>,
         cx: &mut Context<'_>,
@@ -78,12 +80,14 @@ impl<R: AsyncRead + AsyncWrite + Unpin> AsyncWrite for ProxyStream<R> {
     }
 }
 
-impl<R: AsyncRead + AsyncWrite + Connection + Unpin> Connection for ProxyStream<R> {
+impl<R: Read + Write + Connection + Unpin> Connection for ProxyStream<R> {
     fn connected(&self) -> Connected {
         match self {
             ProxyStream::NoProxy(s) => s.connected(),
+
             ProxyStream::Regular(s) => s.connected().proxy(true),
-            ProxyStream::Secured(s) => s.get_ref().0.connected().proxy(true),
+
+            ProxyStream::Secured(s) => s.inner().get_ref().0.inner().connected().proxy(true),
         }
     }
 }

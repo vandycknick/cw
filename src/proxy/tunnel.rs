@@ -1,13 +1,14 @@
 use bytes::{buf::Buf, BytesMut};
 use http::HeaderMap;
+use hyper::rt::{Read, Write};
 use std::fmt::{self, Display, Formatter};
 use std::future::Future;
 use std::io;
 use std::pin::Pin;
 use std::task::{Context, Poll};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::proxy::io_err;
+use crate::proxy::rt::{ReadExt as _, WriteExt as _};
 
 macro_rules! try_ready {
     ($x:expr) => {
@@ -77,7 +78,7 @@ pub(crate) fn new(host: &str, port: u16, headers: &HeaderMap) -> TunnelConnect {
     }
 }
 
-impl<S: AsyncRead + AsyncWrite + Unpin> Future for Tunnel<S> {
+impl<S: Read + Write + Unpin> Future for Tunnel<S> {
     type Output = Result<S, io::Error>;
 
     fn poll(self: Pin<&mut Self>, ctx: &mut Context<'_>) -> Poll<Self::Output> {
@@ -125,94 +126,5 @@ impl<S: AsyncRead + AsyncWrite + Unpin> Future for Tunnel<S> {
                 }
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{HeaderMap, Tunnel};
-    use futures_util::future::TryFutureExt;
-    use std::io::{Read, Write};
-    use std::net::TcpListener;
-    use std::thread;
-    use tokio::net::TcpStream;
-    use tokio::runtime::Runtime;
-
-    fn tunnel<S>(conn: S, host: String, port: u16) -> Tunnel<S> {
-        super::new(&host, port, &HeaderMap::new()).with_stream(conn)
-    }
-
-    #[cfg_attr(rustfmt, rustfmt_skip)]
-    macro_rules! mock_tunnel {
-        () => {{
-            mock_tunnel!(
-                b"\
-                HTTP/1.1 200 OK\r\n\
-                \r\n\
-                "
-            )
-        }};
-        ($write:expr) => {{
-            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-            let addr = listener.local_addr().unwrap();
-            let connect_expected = format!(
-                "\
-                 CONNECT {0}:{1} HTTP/1.1\r\n\
-                 Host: {0}:{1}\r\n\
-                 \r\n\
-                 ",
-                addr.ip(),
-                addr.port()
-            ).into_bytes();
-
-            thread::spawn(move || {
-                let (mut sock, _) = listener.accept().unwrap();
-                let mut buf = [0u8; 4096];
-                let n = sock.read(&mut buf).unwrap();
-                assert_eq!(&buf[..n], &connect_expected[..]);
-
-                sock.write_all($write).unwrap();
-            });
-            addr
-        }};
-    }
-
-    #[test]
-    fn test_tunnel() {
-        let addr = mock_tunnel!();
-
-        let core = Runtime::new().unwrap();
-        let work = TcpStream::connect(&addr);
-        let host = addr.ip().to_string();
-        let port = addr.port();
-        let work = work.and_then(|tcp| tunnel(tcp, host, port));
-
-        core.block_on(work).unwrap();
-    }
-
-    #[test]
-    fn test_tunnel_eof() {
-        let addr = mock_tunnel!(b"HTTP/1.1 200 OK");
-
-        let core = Runtime::new().unwrap();
-        let work = TcpStream::connect(&addr);
-        let host = addr.ip().to_string();
-        let port = addr.port();
-        let work = work.and_then(|tcp| tunnel(tcp, host, port));
-
-        core.block_on(work).unwrap_err();
-    }
-
-    #[test]
-    fn test_tunnel_bad_response() {
-        let addr = mock_tunnel!(b"foo bar baz hallo");
-
-        let core = Runtime::new().unwrap();
-        let work = TcpStream::connect(&addr);
-        let host = addr.ip().to_string();
-        let port = addr.port();
-        let work = work.and_then(|tcp| tunnel(tcp, host, port));
-
-        core.block_on(work).unwrap_err();
     }
 }

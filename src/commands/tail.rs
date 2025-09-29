@@ -154,7 +154,7 @@ impl Cmd {
         group_name: String,
         stream_name: Option<String>,
     ) -> eyre::Result<()> {
-        log::info!(target: "cw", "starting tail log producer");
+        tracing::info!(target: "cw", "starting tail log producer");
         let mut tail_sleep_sec = 1;
         let mut start_time = start_time;
         let mut next_token: Option<String> = None;
@@ -172,7 +172,7 @@ impl Cmd {
         }
 
         loop {
-            log::trace!(
+            tracing::trace!(
                 target: "cw",
                 "Getting logs from start ({}) until end ({:?}) with token {:?}.",
                 start_time,
@@ -207,7 +207,7 @@ impl Cmd {
             }
 
             if events.len() == 0 && follow {
-                log::debug!(
+                tracing::debug!(
                     target: "cw",
                     "Reached at of stream while tailing, sleeping for {} sec",
                     tail_sleep_sec
@@ -231,7 +231,7 @@ impl Cmd {
         write_stream_name: bool,
         write_event_id: bool,
     ) -> eyre::Result<()> {
-        log::info!(target: "cw", "starting tail log writer");
+        tracing::info!(target: "cw", "starting tail log writer");
 
         let mut writer = tokio::io::stdout();
         let use_colors = std::io::stdout().is_terminal();

@@ -2,13 +2,15 @@ use std::{fmt::Display, u8};
 
 use clap::{command, Parser, Subcommand};
 use eyre::Context;
-use log::LevelFilter;
+use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{fmt, Layer};
 
 use crate::{
     aws::LogClientBuilder,
     config::{ConfigManager, LocalConfigManager},
     db::{Database, Sqlite},
-    logging,
 };
 
 mod info;
@@ -66,6 +68,9 @@ pub struct Cw {
     )]
     pub region: Option<String>,
 
+    #[arg(global = true, long, help = "", display_order = 0)]
+    pub endpoint: Option<String>,
+
     #[arg(
         long,
         short = 'v',
@@ -83,13 +88,13 @@ pub struct Cw {
 impl Cw {
     fn log_filter(&self) -> LevelFilter {
         match self.verbose {
-            0 => LevelFilter::Off,
-            1 => LevelFilter::Error,
-            2 => LevelFilter::Warn,
-            3 => LevelFilter::Info,
-            4 => LevelFilter::Debug,
-            5 => LevelFilter::Trace,
-            6_u8..=u8::MAX => LevelFilter::max(),
+            0 => LevelFilter::OFF,
+            1 => LevelFilter::ERROR,
+            2 => LevelFilter::WARN,
+            3 => LevelFilter::INFO,
+            4 => LevelFilter::DEBUG,
+            5 => LevelFilter::TRACE,
+            6_u8..=u8::MAX => LevelFilter::TRACE,
         }
     }
 
@@ -98,34 +103,41 @@ impl Cw {
             .get_log_path()
             .context("Failed constructing file sink log path")?;
 
-        let mut builder = logging::Builder::new().with_level(self.log_filter());
+        let file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_path)
+            .context("Failed to open log file")?;
 
-        if true {
-            builder = builder.with_file_sink(&log_path);
-        } else {
-            builder = builder.with_stderr_sink();
-        }
+        let file_layer = fmt::Layer::default()
+            .with_writer(file)
+            .with_ansi(true)
+            .with_target(true)
+            .with_filter(self.log_filter());
 
-        builder.build()?.init()
+        tracing_subscriber::registry()
+            .with(file_layer)
+            .try_init()
+            .context("Failed setting up tracing subscriber")
     }
 
     pub fn run(self) -> eyre::Result<()> {
         let config = LocalConfigManager::new();
         self.setup_logging(&config)?;
 
-        log::info!(target: "cw", "🐾 cw starting up!");
+        tracing::info!(target: "cw", "🐾 cw starting up!");
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()?;
 
-        log::info!(target: "cw", "running command {}", &self.cmd);
-        log::trace!(target: "cw", "log level: {}", self.log_filter());
+        tracing::info!(target: "cw", "running command {}", &self.cmd);
+        tracing::trace!(target: "cw", "log level: {}", self.log_filter());
 
         let result = runtime.block_on(self.invoke_sub_command(config));
 
         if let Err(msg) = &result {
-            log::error!(target: "cw", "failed running command {}, error={} cause={}", &self.cmd, msg, msg.root_cause());
-            log::error!(target: "cw", "{:?}", msg);
+            tracing::error!(target: "cw", "failed running command {}, error={} cause={}", &self.cmd, msg, msg.root_cause());
+            tracing::error!(target: "cw", "{:?}", msg);
         }
 
         result
@@ -143,9 +155,9 @@ impl Cw {
         let path = config.get_db_path()?;
         let db = Sqlite::new(&path).await?;
 
-        if filter == LevelFilter::Trace {
+        if filter == LevelFilter::TRACE {
             let version = db.sqlite_version().await?;
-            log::trace!(target: "cw", "SQLite Version: {}", version);
+            tracing::trace!(target: "cw", "SQLite Version: {}", version);
         }
 
         match &self.cmd {

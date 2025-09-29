@@ -112,10 +112,10 @@ impl Cmd {
         };
 
         let retention = if let Some(days) = log_group.retention_in_days() {
-            log::info!(target: "cw", "The retention for {} is set to {}.", group_name, days);
+            tracing::info!(target: "cw", "The retention for {} is set to {}.", group_name, days);
             Utc::now().checked_sub_days(Days::new(days as u64))
         } else {
-            log::info!(target: "cw", "No retention found for {}, only showing streams that received an event in the last 6 months.", group_name);
+            tracing::info!(target: "cw", "No retention found for {}, only showing streams that received an event in the last 6 months.", group_name);
             Utc::now().checked_sub_months(Months::new(6))
         };
 
