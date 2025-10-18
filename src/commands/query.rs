@@ -108,7 +108,7 @@ impl Cmd {
             )
             .send()
             .await
-            .wrap_err("Failed creating AWS CW Query Client.")?;
+            .context("Failed creating AWS CW Query Client.")?;
 
         let Some(query_id) = query_result.query_id() else {
             return Err(eyre::eyre!("File provided via -file does not exist!"));

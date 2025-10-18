@@ -43,18 +43,17 @@ impl LogClientBuilder {
 
         let http_client = Builder::new()
             .with_proxy(
-                // NOTE: support for http proxy?
                 std::env::var("HTTPS_PROXY")
                     .ok()
-                    // TODO: add some error handling here for when the uri can't be parsed I guess.
-                    .and_then(|u| u.parse::<hyper::Uri>().ok()),
+                    .and_then(|u| {
+                        u.parse::<hyper::Uri>()
+                          .inspect_err(|e| tracing::error!(target: "cw", "Failed parsing parsing HTTPS_PROXY url: {}", e))
+                          .ok()
+                    })
             )
             .with_custom_certs(std::env::var("AWS_CA_BUNDLE").ok().and_then(|a| {
                 load_certificates_from_pem(&a)
-                    .map_err(|e| {
-                        tracing::error!(target: "cw", "Failed to load certificates from AWS_CA_BUNDLE with error: {}", e);
-                        e
-                    })
+                    .inspect_err(|e| tracing::error!(target: "cw", "Failed to load certificates from AWS_CA_BUNDLE with error: {}", e))
                     .ok()
             }))
             .build_https();

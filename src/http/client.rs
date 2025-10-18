@@ -69,22 +69,6 @@ impl Builder {
         }
     }
 
-    pub fn build_http(self) -> SharedHttpClient {
-        build_with_conn_fn(
-            self.client_builder,
-            move |client_builder, settings, runtime_components| {
-                let builder = new_conn_builder(
-                    client_builder,
-                    settings,
-                    runtime_components,
-                    self.proxy.clone(),
-                    self.certs.clone(),
-                );
-                builder.build_http()
-            },
-        )
-    }
-
     /// Create an HTTPS client with the selected TLS provider.
     ///
     /// The trusted certificates will be loaded later when this becomes the selected
@@ -160,18 +144,11 @@ pub struct ConnectorBuilder {
     sleep_impl: Option<SharedAsyncSleep>,
     client_builder: Option<hyper_util::client::legacy::Builder>,
     enable_tcp_nodelay: bool,
-    interface: Option<String>,
     proxy: Option<crate::proxy::Proxy>,
     certs: Option<Vec<CertificateDer<'static>>>,
 }
 
 impl ConnectorBuilder {
-    /// Build an HTTP connector without TLS
-    pub fn build_http(self) -> Connector {
-        let base = self.base_connector();
-        self.wrap_connector(base)
-    }
-
     /// Build a [`Connector`] that will use the default DNS resolver implementation.
     pub fn build(self) -> Connector {
         let http_connector = self.base_connector();
@@ -210,8 +187,6 @@ impl ConnectorBuilder {
         .with_safe_default_protocol_versions()
         .expect("Error with the TLS configuration.")
         .with_root_certificates(roots)
-        // .with_native_roots()
-        // .expect("Error with the TLS configuration.")
         .with_no_client_auth();
 
         tls_config.key_log = Arc::new(KeyLogFile::new());
@@ -293,10 +268,6 @@ impl ConnectorBuilder {
     fn base_connector_with_resolver<R>(&self, resolver: R) -> HyperHttpConnector<R> {
         let mut conn = HyperHttpConnector::new_with_resolver(resolver);
         conn.set_nodelay(self.enable_tcp_nodelay);
-        #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-        if let Some(interface) = &self.interface {
-            conn.set_interface(interface);
-        }
         conn
     }
 
@@ -352,24 +323,6 @@ impl ConnectorBuilder {
     /// Configure `SO_NODELAY` for all sockets to the supplied value `nodelay`
     pub fn set_enable_tcp_nodelay(&mut self, nodelay: bool) -> &mut Self {
         self.enable_tcp_nodelay = nodelay;
-        self
-    }
-
-    /// Sets the value for the `SO_BINDTODEVICE` option on this socket.
-    ///
-    /// If a socket is bound to an interface, only packets received from that particular
-    /// interface are processed by the socket. Note that this only works for some socket
-    /// types (e.g. `AF_INET` sockets).
-    ///
-    /// On Linux it can be used to specify a [VRF], but the binary needs to either have
-    /// `CAP_NET_RAW` capability set or be run as root.
-    ///
-    /// This function is only available on Android, Fuchsia, and Linux.
-    ///
-    /// [VRF]: https://www.kernel.org/doc/Documentation/networking/vrf.txt
-    #[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "linux"))]
-    pub fn set_interface<S: Into<String>>(&mut self, interface: S) -> &mut Self {
-        self.interface = Some(interface.into());
         self
     }
 
@@ -656,29 +609,6 @@ where
         connector_fn,
     })
 }
-
-// #[allow(dead_code)]
-// pub(crate) fn build_with_tcp_conn_fn<C, F>(
-//     client_builder: Option<hyper_util::client::legacy::Builder>,
-//     tcp_connector_fn: F,
-// ) -> SharedHttpClient
-// where
-//     F: Fn() -> C + Send + Sync + 'static,
-//     C: Clone + Send + Sync + 'static,
-//     C: tower::Service<Uri>,
-//     C::Response: Connection + Read + Write + Send + Sync + Unpin + 'static,
-//     C::Future: Unpin + Send + 'static,
-//     C::Error: Into<BoxError>,
-//     C: Connect,
-// {
-//     build_with_conn_fn(
-//         client_builder,
-//         move |client_builder, settings, runtime_components| {
-//             let builder = new_conn_builder(client_builder, settings, runtime_components);
-//             builder.wrap_connector(tcp_connector_fn())
-//         },
-//     )
-// }
 
 fn new_conn_builder(
     client_builder: hyper_util::client::legacy::Builder,

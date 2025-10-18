@@ -47,10 +47,10 @@ pub enum Intercept {
 pub trait Dst {
     /// Returns the connection scheme, e.g. "http" or "https"
     fn scheme(&self) -> Option<&str>;
-    /// Returns the host of the connection
-    fn host(&self) -> Option<&str>;
-    /// Returns the port for the connection
-    fn port(&self) -> Option<u16>;
+    // /// Returns the host of the connection
+    // fn host(&self) -> Option<&str>;
+    // /// Returns the port for the connection
+    // fn port(&self) -> Option<u16>;
 }
 
 impl Dst for Uri {
@@ -58,13 +58,13 @@ impl Dst for Uri {
         self.scheme_str()
     }
 
-    fn host(&self) -> Option<&str> {
-        self.host()
-    }
-
-    fn port(&self) -> Option<u16> {
-        self.port_u16()
-    }
+    // fn host(&self) -> Option<&str> {
+    //     self.host()
+    // }
+    //
+    // fn port(&self) -> Option<u16> {
+    //     self.port_u16()
+    // }
 }
 
 #[inline]
