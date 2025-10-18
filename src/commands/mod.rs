@@ -49,7 +49,7 @@ impl Display for CwCmd {
 }
 
 #[derive(Parser)]
-#[command(version, long_version = "")]
+#[command(version)]
 #[command(about = "Swiss army knife to query CloudWatch logs form the CLI.", long_about = None, disable_help_subcommand = true)]
 pub struct Cw {
     #[arg(
