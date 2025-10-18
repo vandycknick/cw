@@ -4,16 +4,16 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-aws-config = { version = "1.8.6", features = ["behavior-version-latest"] }
-aws-sdk-cloudwatch = "1.92"
-aws-sdk-cloudwatchlogs = "1.103"
-aws-sdk-sts = "1.86"
-aws-smithy-async = "1.2.5"
-aws-smithy-runtime-api = { version = "1.9.0", features = ["client"] }
-aws-smithy-types = "1.3.2"
+aws-config = { version = "1.8.8", features = ["behavior-version-latest"] }
+aws-sdk-cloudwatch = "1.94"
+aws-sdk-cloudwatchlogs = "1.105"
+aws-sdk-sts = "1.88"
+aws-smithy-async = "1.2.6"
+aws-smithy-runtime-api = { version = "1.9.1", features = ["client"] }
+aws-smithy-types = "1.3.3"
 bytes = "1.10.1"
 chrono = "0.4.42"
-clap = { version = "4.5.48", features = ["cargo", "derive"] }
+clap = { version = "4.5.49", features = ["cargo", "derive"] }
 eyre = "0.6.12"
 futures-util = "0.3.31"
 h2 = "0.4.12"
