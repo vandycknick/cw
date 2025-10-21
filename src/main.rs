@@ -3,8 +3,6 @@ mod commands;
 mod config;
 mod db;
 mod editor;
-mod http;
-mod proxy;
 mod utils;
 
 use crate::commands::Cw;

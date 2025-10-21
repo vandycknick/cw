@@ -1,7 +1,12 @@
-use crate::http::client::Builder;
+use std::fs;
+
 use aws_config::{retry::RetryConfig, Region};
 use aws_config::{AppName, BehaviorVersion};
 use aws_sdk_cloudwatchlogs as cloudwatchlogs;
+use aws_smithy_http_client::proxy::ProxyConfig;
+use aws_smithy_http_client::tls::{self, TlsContext, TrustStore};
+use aws_smithy_http_client::{Builder, ConnectorBuilder};
+use eyre::Context;
 
 pub struct LogClientBuilder {
     profile_name: Option<String>,
@@ -41,22 +46,32 @@ impl LogClientBuilder {
             config_builder = config_builder.region(Region::new(region.clone()));
         }
 
-        let http_client = Builder::new()
-            .with_proxy(
-                std::env::var("HTTPS_PROXY")
-                    .ok()
-                    .and_then(|u| {
-                        u.parse::<hyper::Uri>()
-                          .inspect_err(|e| tracing::error!(target: "cw", "Failed parsing parsing HTTPS_PROXY url: {}", e))
-                          .ok()
-                    })
-            )
-            .with_custom_certs(std::env::var("AWS_CA_BUNDLE").ok().and_then(|a| {
-                load_certificates_from_pem(&a)
-                    .inspect_err(|e| tracing::error!(target: "cw", "Failed to load certificates from AWS_CA_BUNDLE with error: {}", e))
-                    .ok()
-            }))
-            .build_https();
+        let mut store = TrustStore::empty().with_native_roots(true);
+        if let Some(cert_bytes) = std::env::var("AWS_CA_BUNDLE")
+            .ok()
+            .map(|a| fs::read(&a).context(format!("Failed reading AWS_CA_BUNDLE: {}", &a)))
+            .transpose()?
+        {
+            store = store.with_pem_certificate(cert_bytes);
+        }
+        let context = TlsContext::builder().with_trust_store(store).build()?;
+
+        let http_client =
+            Builder::new().build_with_connector_fn(move |settings, runtime_components| {
+                let mut conn_builder = ConnectorBuilder::default()
+                    .tls_provider(tls::Provider::Rustls(
+                        tls::rustls_provider::CryptoMode::AwsLc,
+                    ))
+                    .tls_context(context.clone());
+
+                conn_builder.set_connector_settings(settings.cloned());
+                if let Some(components) = runtime_components {
+                    conn_builder.set_sleep_impl(components.sleep_impl());
+                }
+
+                conn_builder.set_proxy_config(Some(ProxyConfig::from_env()));
+                conn_builder.build()
+            });
 
         let config = config_builder
             .app_name(AppName::new("cw").unwrap())
@@ -66,23 +81,5 @@ impl LogClientBuilder {
 
         let client = cloudwatchlogs::Client::new(&config);
         Ok(client)
-    }
-}
-
-fn load_certificates_from_pem(
-    path: &str,
-) -> eyre::Result<Vec<rustls::pki_types::CertificateDer<'static>>> {
-    let file = std::fs::File::open(path)?;
-    let mut reader = std::io::BufReader::new(file);
-
-    let certs = rustls_pemfile::certs(&mut reader)
-        .map(|c| c.map_err(Into::into))
-        .into_iter()
-        .collect::<eyre::Result<Vec<_>>>()?;
-
-    if certs.is_empty() {
-        Err(eyre::eyre!("No certificates found in file {}", path))
-    } else {
-        Ok(certs)
     }
 }
