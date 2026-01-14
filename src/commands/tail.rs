@@ -8,6 +8,11 @@ use clap::{Parser, ValueEnum};
 use eyre::Context;
 use futures_util::{stream::FuturesUnordered, StreamExt};
 use serde_json::json;
+use tailspin::{
+    config::{JsonConfig, KeywordConfig, NumberConfig},
+    style::{Color, Style},
+    Highlighter,
+};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
@@ -83,35 +88,33 @@ pub enum OutputType {
     Json,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum JsonTokenKind {
-    String,
-    Number,
-    Boolean,
-    Null,
-    CurlyOpen,
-    CurlyClose,
-    SquareOpen,
-    SquareClose,
-    Colon,
-    Comma,
-    Whitespace,
-    Other,
+fn build_json_highlighter() -> eyre::Result<Highlighter> {
+    let mut builder = Highlighter::builder();
+    let faint = Style::new().faint();
+
+    builder
+        .with_json_highlighter(JsonConfig {
+            key: Style::new().fg(Color::Yellow),
+            quote_token: Style::new().fg(Color::Yellow),
+            curly_bracket: faint,
+            square_bracket: faint,
+            comma: faint,
+            colon: faint,
+        })
+        .with_number_highlighter(NumberConfig {
+            style: Style::new().fg(Color::Cyan),
+        })
+        .with_keyword_highlighter(vec![KeywordConfig {
+            words: vec!["true".to_string(), "false".to_string(), "null".to_string()],
+            style: Style::new().fg(Color::Blue),
+        }]);
+
+    builder
+        .build()
+        .map_err(|err| eyre::eyre!("failed to build json highlighter: {err}"))
 }
 
-#[derive(Clone, Debug)]
-struct JsonToken {
-    kind: JsonTokenKind,
-    range: std::ops::Range<usize>,
-}
-
-impl JsonToken {
-    fn text<'a>(&self, input: &'a str) -> &'a str {
-        &input[self.range.clone()]
-    }
-}
-
-fn highlight_json_if_applicable(message: &str) -> Option<String> {
+fn highlight_json_if_applicable(message: &str, highlighter: &Highlighter) -> Option<String> {
     let trimmed = message.trim_start();
     if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
         return None;
@@ -121,225 +124,7 @@ fn highlight_json_if_applicable(message: &str) -> Option<String> {
         return None;
     }
 
-    Some(colorize_json(message))
-}
-
-fn colorize_json(input: &str) -> String {
-    let tokens = tokenize_json(input);
-    let mut output = String::with_capacity(input.len() + 16);
-
-    for (index, token) in tokens.iter().enumerate() {
-        let text = token.text(input);
-        match token.kind {
-            JsonTokenKind::Whitespace | JsonTokenKind::Other => output.push_str(text),
-            JsonTokenKind::String => {
-                let mut is_key = false;
-                for next_token in tokens.iter().skip(index + 1) {
-                    if next_token.kind == JsonTokenKind::Whitespace {
-                        continue;
-                    }
-                    is_key = next_token.kind == JsonTokenKind::Colon;
-                    break;
-                }
-
-                let painted = if is_key {
-                    Paint::yellow(text)
-                } else {
-                    Paint::green(text)
-                };
-                output.push_str(&painted.to_string());
-            }
-            JsonTokenKind::Number => {
-                output.push_str(&Paint::cyan(text).to_string());
-            }
-            JsonTokenKind::Boolean | JsonTokenKind::Null => {
-                output.push_str(&Paint::blue(text).to_string());
-            }
-            JsonTokenKind::CurlyOpen
-            | JsonTokenKind::CurlyClose
-            | JsonTokenKind::SquareOpen
-            | JsonTokenKind::SquareClose
-            | JsonTokenKind::Comma
-            | JsonTokenKind::Colon => {
-                output.push_str(&Paint::new(text).dim().to_string());
-            }
-        }
-    }
-
-    output
-}
-
-fn tokenize_json(input: &str) -> Vec<JsonToken> {
-    let bytes = input.as_bytes();
-    let mut tokens = Vec::new();
-    let mut index = 0;
-
-    while index < bytes.len() {
-        match bytes[index] {
-            b'"' => {
-                let start = index;
-                index += 1;
-                let mut escaped = false;
-                while index < bytes.len() {
-                    let byte = bytes[index];
-                    if escaped {
-                        escaped = false;
-                        index += 1;
-                        continue;
-                    }
-                    if byte == b'\\' {
-                        escaped = true;
-                        index += 1;
-                        continue;
-                    }
-                    index += 1;
-                    if byte == b'"' {
-                        break;
-                    }
-                }
-                tokens.push(JsonToken {
-                    kind: JsonTokenKind::String,
-                    range: start..index,
-                });
-            }
-            b'{' => {
-                tokens.push(JsonToken {
-                    kind: JsonTokenKind::CurlyOpen,
-                    range: index..index + 1,
-                });
-                index += 1;
-            }
-            b'}' => {
-                tokens.push(JsonToken {
-                    kind: JsonTokenKind::CurlyClose,
-                    range: index..index + 1,
-                });
-                index += 1;
-            }
-            b'[' => {
-                tokens.push(JsonToken {
-                    kind: JsonTokenKind::SquareOpen,
-                    range: index..index + 1,
-                });
-                index += 1;
-            }
-            b']' => {
-                tokens.push(JsonToken {
-                    kind: JsonTokenKind::SquareClose,
-                    range: index..index + 1,
-                });
-                index += 1;
-            }
-            b':' => {
-                tokens.push(JsonToken {
-                    kind: JsonTokenKind::Colon,
-                    range: index..index + 1,
-                });
-                index += 1;
-            }
-            b',' => {
-                tokens.push(JsonToken {
-                    kind: JsonTokenKind::Comma,
-                    range: index..index + 1,
-                });
-                index += 1;
-            }
-            b' ' | b'\t' | b'\n' | b'\r' => {
-                let start = index;
-                index += 1;
-                while index < bytes.len() {
-                    match bytes[index] {
-                        b' ' | b'\t' | b'\n' | b'\r' => index += 1,
-                        _ => break,
-                    }
-                }
-                tokens.push(JsonToken {
-                    kind: JsonTokenKind::Whitespace,
-                    range: start..index,
-                });
-            }
-            b'-' | b'0'..=b'9' => {
-                let start = index;
-                index += 1;
-                while index < bytes.len() {
-                    match bytes[index] {
-                        b'0'..=b'9' | b'.' | b'e' | b'E' | b'+' | b'-' => index += 1,
-                        _ => break,
-                    }
-                }
-                tokens.push(JsonToken {
-                    kind: JsonTokenKind::Number,
-                    range: start..index,
-                });
-            }
-            b't' => {
-                if input
-                    .get(index..)
-                    .map(|rest| rest.starts_with("true"))
-                    .unwrap_or(false)
-                {
-                    tokens.push(JsonToken {
-                        kind: JsonTokenKind::Boolean,
-                        range: index..index + 4,
-                    });
-                    index += 4;
-                } else {
-                    tokens.push(JsonToken {
-                        kind: JsonTokenKind::Other,
-                        range: index..index + 1,
-                    });
-                    index += 1;
-                }
-            }
-            b'f' => {
-                if input
-                    .get(index..)
-                    .map(|rest| rest.starts_with("false"))
-                    .unwrap_or(false)
-                {
-                    tokens.push(JsonToken {
-                        kind: JsonTokenKind::Boolean,
-                        range: index..index + 5,
-                    });
-                    index += 5;
-                } else {
-                    tokens.push(JsonToken {
-                        kind: JsonTokenKind::Other,
-                        range: index..index + 1,
-                    });
-                    index += 1;
-                }
-            }
-            b'n' => {
-                if input
-                    .get(index..)
-                    .map(|rest| rest.starts_with("null"))
-                    .unwrap_or(false)
-                {
-                    tokens.push(JsonToken {
-                        kind: JsonTokenKind::Null,
-                        range: index..index + 4,
-                    });
-                    index += 4;
-                } else {
-                    tokens.push(JsonToken {
-                        kind: JsonTokenKind::Other,
-                        range: index..index + 1,
-                    });
-                    index += 1;
-                }
-            }
-            _ => {
-                tokens.push(JsonToken {
-                    kind: JsonTokenKind::Other,
-                    range: index..index + 1,
-                });
-                index += 1;
-            }
-        }
-    }
-
-    tokens
+    Some(highlighter.apply(message).into_owned())
 }
 
 trait LogEventWriter {
@@ -358,6 +143,7 @@ where
     with_group_name: bool,
     with_stream_name: bool,
     with_event_id: bool,
+    json_highlighter: Highlighter,
 
     sink: W,
 }
@@ -372,6 +158,7 @@ where
         with_group_name: bool,
         with_stream_name: bool,
         with_event_id: bool,
+        json_highlighter: Highlighter,
         sink: W,
     ) -> Self {
         Self {
@@ -380,6 +167,7 @@ where
             with_group_name,
             with_stream_name,
             with_event_id,
+            json_highlighter,
             sink,
         }
     }
@@ -418,7 +206,7 @@ where
         }
 
         if let Some(msg) = &event.message {
-            if let Some(highlighted) = highlight_json_if_applicable(msg) {
+            if let Some(highlighted) = highlight_json_if_applicable(msg, &self.json_highlighter) {
                 line.push_str(&highlighted);
             } else {
                 line.push_str(msg);
@@ -604,12 +392,14 @@ impl Cmd {
         let sink = tokio::io::stdout();
         let log_writer = match self.output {
             OutputType::Text => {
+                let json_highlighter = build_json_highlighter()?;
                 let w = TextWriter::new(
                     self.local,
                     self.print_timestamp,
                     self.print_group_name,
                     self.print_stream_name,
                     self.print_event_id,
+                    json_highlighter,
                     sink,
                 );
                 tokio::spawn(Self::write_log_event(receiver, w))
