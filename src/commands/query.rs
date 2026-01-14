@@ -1,4 +1,5 @@
 use std::fmt::Display;
+use std::io::Write;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::time::Duration;
@@ -8,6 +9,7 @@ use chrono::Utc;
 use clap::{Args, Subcommand};
 use eyre::Context;
 use serde_json::{Map, Value};
+use tabwriter::TabWriter;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tokio::time::sleep;
@@ -108,7 +110,7 @@ impl Cmd {
             )
             .send()
             .await
-            .context("Failed creating AWS CW Query Client.")?;
+            .context("Failed to fetch CloudWatch logs.")?;
 
         let Some(query_id) = query_result.query_id() else {
             return Err(eyre::eyre!("File provided via -file does not exist!"));
@@ -211,12 +213,55 @@ impl Cmd {
 
     pub async fn run_command(&self, cmd: &Commands, db: impl Database) -> eyre::Result<()> {
         match cmd {
-            Commands::History => {
-                for item in db.list().await? {
-                    println!("{} | {}", item.query_id, item.contents);
-                }
-                Ok(())
-            }
+            Commands::History => self.run_history(db).await,
         }
     }
+
+    pub async fn run_history(&self, db: impl Database) -> eyre::Result<()> {
+        let mut tw = TabWriter::new(std::io::stdout()).padding(2).minwidth(0);
+
+        writeln!(
+            &mut tw,
+            "ID\tACCOUNT\tQUERY\tSTATUS\tTOTAL\tMATCHED\tSCANNED"
+        )?;
+
+        let size = terminal_size::terminal_size();
+        for item in db.list().await? {
+            let oneline = item
+                .contents
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let contents = size
+                .map(|(w, _)| {
+                    let size = w.0.saturating_sub(100).max(20) as usize;
+                    truncate_text(&oneline, size)
+                })
+                .unwrap_or(oneline);
+            writeln!(
+                &mut tw,
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                item.query_id,
+                "",
+                contents,
+                item.status,
+                item.records_total,
+                item.records_matched,
+                item.records_scanned
+            )?;
+        }
+
+        tw.flush().context("failed to write to stdout")?;
+
+        Ok(())
+    }
+}
+
+fn truncate_text(s: &str, width: usize) -> String {
+    let mut clean = String::from_str(s).unwrap();
+    if clean.len() > width {
+        clean.truncate(width.saturating_sub(1));
+        clean.push('…');
+    }
+    clean
 }
