@@ -1,12 +1,123 @@
 use std::fs;
+use std::sync::OnceLock;
 
 use aws_config::{retry::RetryConfig, Region};
-use aws_config::{AppName, BehaviorVersion};
+use aws_config::{AppName, BehaviorVersion, SdkConfig};
 use aws_sdk_cloudwatchlogs as cloudwatchlogs;
+use aws_sdk_sts as sts;
 use aws_smithy_http_client::proxy::ProxyConfig;
 use aws_smithy_http_client::tls::{self, TlsContext, TrustStore};
 use aws_smithy_http_client::{Builder, ConnectorBuilder};
 use eyre::Context;
+
+trait AwsClient {
+    fn cw(&self) -> &cloudwatchlogs::Client;
+    fn sts(&self) -> &sts::Client;
+}
+
+pub struct DefaultAwsClient {
+    config: SdkConfig,
+    cw_client: OnceLock<cloudwatchlogs::Client>,
+    sts_client: OnceLock<sts::Client>,
+}
+
+impl DefaultAwsClient {
+    pub fn new(config: SdkConfig) -> Self {
+        Self {
+            config,
+            cw_client: OnceLock::new(),
+            sts_client: OnceLock::new(),
+        }
+    }
+}
+
+impl AwsClient for DefaultAwsClient {
+    fn cw(&self) -> &aws_sdk_cloudwatchlogs::Client {
+        self.cw_client
+            .get_or_init(|| cloudwatchlogs::Client::new(&self.config))
+    }
+
+    fn sts(&self) -> &sts::Client {
+        self.sts_client
+            .get_or_init(|| sts::Client::new(&self.config))
+    }
+}
+
+pub struct AwsClientBuilder {
+    profile_name: Option<String>,
+    region: Option<String>,
+    retry_config: RetryConfig,
+}
+
+impl AwsClientBuilder {
+    pub fn new() -> Self {
+        AwsClientBuilder {
+            profile_name: None,
+            region: None,
+            retry_config: RetryConfig::standard(),
+        }
+    }
+
+    pub fn use_profile_name(mut self, profile_name: Option<String>) -> Self {
+        self.profile_name = profile_name;
+        self
+    }
+
+    pub fn use_region(mut self, region: Option<String>) -> Self {
+        self.region = region;
+        self
+    }
+
+    pub async fn build(&self) -> eyre::Result<DefaultAwsClient> {
+        let mut config_builder = aws_config::from_env()
+            .retry_config(self.retry_config.clone())
+            .behavior_version(BehaviorVersion::latest());
+
+        if let Some(profile_name) = &self.profile_name {
+            config_builder = config_builder.profile_name(profile_name);
+        }
+
+        if let Some(region) = &self.region {
+            config_builder = config_builder.region(Region::new(region.clone()));
+        }
+
+        let mut store = TrustStore::empty().with_native_roots(true);
+        if let Some(cert_bytes) = std::env::var("AWS_CA_BUNDLE")
+            .ok()
+            .map(|a| fs::read(&a).context(format!("Failed reading AWS_CA_BUNDLE: {}", &a)))
+            .transpose()?
+        {
+            store = store.with_pem_certificate(cert_bytes);
+        }
+        let context = TlsContext::builder().with_trust_store(store).build()?;
+
+        let http_client =
+            Builder::new().build_with_connector_fn(move |settings, runtime_components| {
+                let mut conn_builder = ConnectorBuilder::default()
+                    .tls_provider(tls::Provider::Rustls(
+                        tls::rustls_provider::CryptoMode::AwsLc,
+                    ))
+                    .tls_context(context.clone());
+
+                conn_builder.set_connector_settings(settings.cloned());
+                if let Some(components) = runtime_components {
+                    conn_builder.set_sleep_impl(components.sleep_impl());
+                }
+
+                conn_builder.set_proxy_config(Some(ProxyConfig::from_env()));
+                conn_builder.build()
+            });
+
+        let config = config_builder
+            .app_name(AppName::new("cw").unwrap())
+            .http_client(http_client)
+            .load()
+            .await;
+
+        let client = DefaultAwsClient::new(config);
+        Ok(client)
+    }
+}
 
 pub struct LogClientBuilder {
     profile_name: Option<String>,
