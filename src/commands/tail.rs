@@ -1,5 +1,4 @@
-use std::fmt::Write;
-use std::{future::Future, time::Duration};
+use std::{fmt::Write, future::Future, io::IsTerminal, time::Duration};
 
 use aws_sdk_cloudwatchlogs::types::FilteredLogEvent;
 use aws_sdk_cloudwatchlogs::Client;
@@ -7,12 +6,7 @@ use chrono::Utc;
 use clap::{Parser, ValueEnum};
 use eyre::Context;
 use futures_util::{stream::FuturesUnordered, StreamExt};
-use serde_json::json;
-use tailspin::{
-    config::{JsonConfig, KeywordConfig, NumberConfig},
-    style::{Color, Style},
-    Highlighter,
-};
+use serde_json::{json, Value};
 use tokio::{
     io::{AsyncWrite, AsyncWriteExt},
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
@@ -88,43 +82,77 @@ pub enum OutputType {
     Json,
 }
 
-fn build_json_highlighter() -> eyre::Result<Highlighter> {
-    let mut builder = Highlighter::builder();
-    let faint = Style::new().faint();
+#[derive(Debug, Default)]
+struct JsonHighlighter;
 
-    builder
-        .with_json_highlighter(JsonConfig {
-            key: Style::new().fg(Color::Yellow),
-            quote_token: Style::new().fg(Color::Yellow),
-            curly_bracket: faint,
-            square_bracket: faint,
-            comma: faint,
-            colon: faint,
-        })
-        .with_number_highlighter(NumberConfig {
-            style: Style::new().fg(Color::Cyan),
-        })
-        .with_keyword_highlighter(vec![KeywordConfig {
-            words: vec!["true".to_string(), "false".to_string(), "null".to_string()],
-            style: Style::new().fg(Color::Blue),
-        }]);
+impl JsonHighlighter {
+    fn format_json(value: &Value, output: &mut String) {
+        match value {
+            Value::Object(map) => {
+                let _ = write!(output, "{}", Paint::new("{").dim());
+                let mut first = true;
+                for (key, val) in map {
+                    if !first {
+                        let _ = write!(output, "{}", Paint::new(",").dim());
+                    }
+                    first = false;
 
-    builder
-        .build()
-        .map_err(|err| eyre::eyre!("failed to build json highlighter: {err}"))
+                    let _ = write!(output, " ");
+                    let _ = write!(output, "{}", "\"".yellow());
+                    let _ = write!(output, "{}", key.yellow());
+                    let _ = write!(output, "{}", "\"".yellow());
+                    let _ = write!(output, "{} ", Paint::new(":").dim());
+
+                    Self::format_json(val, output);
+                }
+                let _ = write!(output, " {}", Paint::new("}").dim());
+            }
+            Value::Array(array) => {
+                let _ = write!(output, "{}", Paint::new("[").dim());
+                let mut first = true;
+                for item in array {
+                    if !first {
+                        let _ = write!(output, "{} ", Paint::new(",").dim());
+                    }
+                    first = false;
+
+                    Self::format_json(item, output);
+                }
+                let _ = write!(output, "{}", Paint::new("]").dim());
+            }
+            Value::String(value) => {
+                let _ = write!(output, "{}", "\"".green());
+                let _ = write!(output, "{}", value.green());
+                let _ = write!(output, "{}", "\"".green());
+            }
+            Value::Number(value) => {
+                let _ = write!(output, "{}", value.to_string().cyan());
+            }
+            Value::Bool(value) => {
+                let _ = write!(output, "{}", value.to_string().blue());
+            }
+            Value::Null => {
+                let _ = write!(output, "{}", "null".blue());
+            }
+        }
+    }
 }
 
-fn highlight_json_if_applicable(message: &str, highlighter: &Highlighter) -> Option<String> {
+fn highlight_json_if_applicable(message: &str) -> Option<String> {
     let trimmed = message.trim_start();
     if !(trimmed.starts_with('{') || trimmed.starts_with('[')) {
         return None;
     }
 
-    if serde_json::from_str::<serde_json::Value>(trimmed).is_err() {
-        return None;
+    let value: Value = serde_json::from_str(trimmed).ok()?;
+    let mut output = String::new();
+    let leading_len = message.len().saturating_sub(trimmed.len());
+    if leading_len > 0 {
+        output.push_str(&message[..leading_len]);
     }
 
-    Some(highlighter.apply(message).into_owned())
+    JsonHighlighter::format_json(&value, &mut output);
+    Some(output)
 }
 
 trait LogEventWriter {
@@ -143,7 +171,7 @@ where
     with_group_name: bool,
     with_stream_name: bool,
     with_event_id: bool,
-    json_highlighter: Highlighter,
+    use_color: bool,
 
     sink: W,
 }
@@ -158,7 +186,7 @@ where
         with_group_name: bool,
         with_stream_name: bool,
         with_event_id: bool,
-        json_highlighter: Highlighter,
+        use_color: bool,
         sink: W,
     ) -> Self {
         Self {
@@ -167,7 +195,7 @@ where
             with_group_name,
             with_stream_name,
             with_event_id,
-            json_highlighter,
+            use_color,
             sink,
         }
     }
@@ -206,8 +234,12 @@ where
         }
 
         if let Some(msg) = &event.message {
-            if let Some(highlighted) = highlight_json_if_applicable(msg, &self.json_highlighter) {
-                line.push_str(&highlighted);
+            if self.use_color {
+                if let Some(highlighted) = highlight_json_if_applicable(msg) {
+                    line.push_str(&highlighted);
+                } else {
+                    line.push_str(msg);
+                }
             } else {
                 line.push_str(msg);
             }
@@ -390,16 +422,16 @@ impl Cmd {
         drop(sender); // NOTE: dropping here because each producers already has a clone
 
         let sink = tokio::io::stdout();
+        let use_color = std::io::stdout().is_terminal();
         let log_writer = match self.output {
             OutputType::Text => {
-                let json_highlighter = build_json_highlighter()?;
                 let w = TextWriter::new(
                     self.local,
                     self.print_timestamp,
                     self.print_group_name,
                     self.print_stream_name,
                     self.print_event_id,
-                    json_highlighter,
+                    use_color,
                     sink,
                 );
                 tokio::spawn(Self::write_log_event(receiver, w))
